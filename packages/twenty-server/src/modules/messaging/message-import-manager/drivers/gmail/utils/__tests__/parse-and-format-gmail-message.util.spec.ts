@@ -99,6 +99,39 @@ describe('parseAndFormatGmailMessage', () => {
     expect(result?.direction).toBe(MessageDirection.OUTGOING);
   });
 
+  it('should keep the body of an entirely-quoted forwarded message instead of emptying it', () => {
+    // Regression: planer stripped the whole forwarded body, persisting text=''.
+    const forwardedBody =
+      '> quoted line one\n> quoted line two\n> quoted line three';
+
+    const result = parseAndFormatGmailMessage(
+      buildMessage(
+        [
+          { name: 'From', value: 'sender@example.com' },
+          { name: 'To', value: 'me@example.com' },
+          { name: 'Message-ID', value: '<abc@example.com>' },
+        ],
+        {
+          payload: {
+            headers: [
+              { name: 'From', value: 'sender@example.com' },
+              { name: 'To', value: 'me@example.com' },
+              { name: 'Message-ID', value: '<abc@example.com>' },
+            ],
+            mimeType: 'text/plain',
+            body: {
+              data: Buffer.from(forwardedBody).toString('base64'),
+              size: forwardedBody.length,
+            },
+          },
+        },
+      ),
+      connectedAccount,
+    );
+
+    expect(result?.text).toBe(forwardedBody);
+  });
+
   it('should return null when required headers (`From`, `Message-ID`) are missing', () => {
     const result = parseAndFormatGmailMessage(
       buildMessage([{ name: 'To', value: 'alice@example.com' }]),
@@ -113,6 +146,34 @@ describe('parseAndFormatGmailMessage', () => {
       buildMessage([
         { name: 'From', value: 'sender@example.com' },
         { name: 'Message-ID', value: '<abc@example.com>' },
+      ]),
+      connectedAccount,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it('should keep a draft missing a Message-ID header by synthesizing a fallback id', () => {
+    const result = parseAndFormatGmailMessage(
+      buildMessage(
+        [
+          { name: 'From', value: 'me@example.com' },
+          { name: 'To', value: 'alice@example.com' },
+        ],
+        { labelIds: ['DRAFT'] },
+      ),
+      connectedAccount,
+    );
+
+    expect(result?.isDraft).toBe(true);
+    expect(result?.headerMessageId).toBe('draft-msg-1');
+  });
+
+  it('should still drop a non-draft message missing a Message-ID header', () => {
+    const result = parseAndFormatGmailMessage(
+      buildMessage([
+        { name: 'From', value: 'sender@example.com' },
+        { name: 'To', value: 'alice@example.com' },
       ]),
       connectedAccount,
     );

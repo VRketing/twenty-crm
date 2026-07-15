@@ -1,3 +1,5 @@
+import { type AppLocale } from '@/translations';
+
 import { type AgentManifest } from './agentManifestType';
 import { type ApplicationManifest } from './applicationType';
 import { type AssetManifest } from './assetManifestType';
@@ -18,7 +20,14 @@ import {
 import { type PermissionFlagManifest } from './permissionFlagManifestType';
 import { type RoleManifest } from './roleManifestType';
 import { type SkillManifest } from './skillManifestType';
-import { type ViewManifest } from './viewManifestType';
+import {
+  type StandaloneViewFieldManifest,
+  type ViewManifest,
+} from './viewManifestType';
+
+export type TranslationsManifest = Partial<
+  Record<AppLocale, Record<string, string>>
+>;
 
 export type Manifest = {
   application: ApplicationManifest;
@@ -34,8 +43,10 @@ export type Manifest = {
   connectionProviders?: ConnectionProviderManifest[];
   publicAssets: AssetManifest[];
   views: ViewManifest[];
+  viewFields: StandaloneViewFieldManifest[];
   navigationMenuItems: NavigationMenuItemManifest[];
   pageLayouts: PageLayoutManifest[];
   pageLayoutTabs: PageLayoutTabManifest[];
   commandMenuItems: CommandMenuItemManifest[];
+  translations?: TranslationsManifest;
 };

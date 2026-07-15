@@ -11,19 +11,20 @@ import { fromRoleConfigToRoleManifest } from '@/cli/utilities/build/manifest/uti
 import { getDefaultFieldsInObjectFields } from '@/cli/utilities/build/manifest/utils/get-default-fields-in-object-fields';
 import { validateConditionalAvailabilityUsage } from '@/cli/utilities/build/manifest/utils/validate-conditional-availability-usage';
 import { validateViewFilterOperands } from '@/cli/utilities/build/manifest/utils/validate-view-filter-operands';
+import { getEngineVersionRange } from '@/cli/utilities/version/get-engine-version-range';
 import { type ApplicationConfig, type LogicFunctionConfig } from '@/sdk/define';
 import { type CommandMenuItemConfig } from '@/sdk/define/command-menu-items/command-menu-item-config';
 import { type FrontComponentConfig } from '@/sdk/define/front-component/front-component-config';
+import { type IndexConfig } from '@/sdk/define/indexes/index-config';
 import { type PostInstallLogicFunctionConfig } from '@/sdk/define/logic-functions/post-install-logic-function-config';
 import { type PreInstallLogicFunctionConfig } from '@/sdk/define/logic-functions/pre-install-logic-function-config';
 import { type ObjectConfig } from '@/sdk/define/objects/object-config';
-import { type IndexConfig } from '@/sdk/define/indexes/index-config';
 import { type PageLayoutConfig } from '@/sdk/define/page-layouts/page-layout-config';
 import { type PageLayoutTabConfig } from '@/sdk/define/page-layouts/page-layout-tab-config';
 import { type RoleConfig } from '@/sdk/define/roles/role-config';
 import { type ViewConfig } from '@/sdk/define/views/view-config';
 import { readFile } from 'node:fs/promises';
-import { basename, extname, relative } from 'path';
+import { basename, extname, join, relative } from 'path';
 import { glob } from 'tinyglobby';
 import {
   type AgentManifest,
@@ -46,6 +47,7 @@ import {
   type PreInstallLogicFunctionApplicationManifest,
   type RoleManifest,
   type SkillManifest,
+  type StandaloneViewFieldManifest,
   type ViewManifest,
 } from 'twenty-shared/application';
 import {
@@ -71,6 +73,16 @@ const loadAssets = async (appPath: string) => {
   });
 };
 
+const loadReadme = async (appPath: string): Promise<string | undefined> => {
+  try {
+    const content = await readFile(join(appPath, 'README.md'), 'utf-8');
+
+    return content.trim().length > 0 ? content : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export const buildManifest = async (
   appPath: string,
 ): Promise<{
@@ -80,10 +92,12 @@ export const buildManifest = async (
   warnings: string[];
 }> => {
   const filePaths = await loadSources(appPath);
+  const readmeContent = await loadReadme(appPath);
   const errors: string[] = [];
   const warnings: string[] = [];
 
   let applicationConfig: ApplicationConfig | undefined;
+  const objectConfigs: ObjectConfig[] = [];
   const objects: ObjectManifest[] = [];
   const fields: FieldManifest[] = [];
   const indexes: IndexManifest[] = [];
@@ -96,6 +110,7 @@ export const buildManifest = async (
   const frontComponents: FrontComponentManifest[] = [];
   const publicAssets: AssetManifest[] = [];
   const views: ViewManifest[] = [];
+  const viewFields: StandaloneViewFieldManifest[] = [];
   const navigationMenuItems: NavigationMenuItemManifest[] = [];
   const pageLayouts: PageLayoutManifest[] = [];
   const pageLayoutTabs: PageLayoutTabManifest[] = [];
@@ -118,6 +133,7 @@ export const buildManifest = async (
   const frontComponentsFilePaths: string[] = [];
   const publicAssetsFilePaths: string[] = [];
   const viewsFilePaths: string[] = [];
+  const viewFieldsFilePaths: string[] = [];
   const navigationMenuItemsFilePaths: string[] = [];
   const pageLayoutsFilePaths: string[] = [];
   const pageLayoutTabsFilePaths: string[] = [];
@@ -158,31 +174,7 @@ export const buildManifest = async (
           filePath,
         });
 
-        const {
-          objectFields: objectFieldsWithDefaults,
-          fields: reverseRelationFields,
-        } = getDefaultFieldsInObjectFields(extract.config);
-
-        const labelIdentifierFieldMetadataUniversalIdentifier =
-          extract.config.labelIdentifierFieldMetadataUniversalIdentifier ??
-          objectFieldsWithDefaults.find((field) => field.name === 'name')
-            ?.universalIdentifier;
-
-        if (!labelIdentifierFieldMetadataUniversalIdentifier) {
-          errors.push(
-            `No label identifier field found for object ${extract.config.nameSingular}. Please add a field with name "name" to your object.`,
-          );
-          break;
-        }
-
-        const objectManifest: ObjectManifest = {
-          ...extract.config,
-          fields: objectFieldsWithDefaults.map(addMissingFieldOptionIds),
-          labelIdentifierFieldMetadataUniversalIdentifier,
-        };
-
-        objects.push(objectManifest);
-        fields.push(...reverseRelationFields);
+        objectConfigs.push(extract.config);
 
         errors.push(...extract.errors);
         warnings.push(...(extract.warnings ?? []));
@@ -276,11 +268,6 @@ export const buildManifest = async (
 
         const { handler: _, ...rest } = extract.config;
 
-        const relativeFilePath = relative(appPath, filePath);
-
-        // Auto-infer inputSchema for any trigger that opts in but omits one.
-        // For the AI tool surface we use the JSON schema directly; for the
-        // workflow action surface we convert to Twenty's InputSchema.
         const inferredJsonSchema =
           (rest.toolTriggerSettings && !rest.toolTriggerSettings.inputSchema) ||
           (rest.workflowActionTriggerSettings &&
@@ -316,8 +303,8 @@ export const buildManifest = async (
             ? { workflowActionTriggerSettings }
             : {}),
           handlerName: 'default.config.handler',
-          sourceHandlerPath: relativeFilePath,
-          builtHandlerPath: relativeFilePath.replace(/\.tsx?$/, '.mjs'),
+          sourceHandlerPath: relativePath,
+          builtHandlerPath: relativePath.replace(/\.tsx?$/, '.mjs'),
           builtHandlerChecksum: '[default-checksum]',
         };
 
@@ -395,6 +382,19 @@ export const buildManifest = async (
         errors.push(...extract.errors);
         warnings.push(...(extract.warnings ?? []));
         viewsFilePaths.push(relativePath);
+        break;
+      }
+      case ManifestEntityKey.ViewFields: {
+        const extract =
+          await extractManifestFromFile<StandaloneViewFieldManifest>({
+            appPath,
+            filePath,
+          });
+
+        viewFields.push(extract.config);
+        errors.push(...extract.errors);
+        warnings.push(...(extract.warnings ?? []));
+        viewFieldsFilePaths.push(relativePath);
         break;
       }
       case ManifestEntityKey.NavigationMenuItems: {
@@ -500,6 +500,39 @@ export const buildManifest = async (
     );
   }
 
+  if (applicationConfig) {
+    for (const objectConfig of objectConfigs) {
+      const {
+        objectFields: objectFieldsWithDefaults,
+        fields: reverseRelationFields,
+      } = getDefaultFieldsInObjectFields({
+        objectConfig,
+        applicationUniversalIdentifier: applicationConfig.universalIdentifier,
+      });
+
+      const labelIdentifierFieldMetadataUniversalIdentifier =
+        objectConfig.labelIdentifierFieldMetadataUniversalIdentifier ??
+        objectFieldsWithDefaults.find((field) => field.name === 'name')
+          ?.universalIdentifier;
+
+      if (!labelIdentifierFieldMetadataUniversalIdentifier) {
+        errors.push(
+          `No label identifier field found for object ${objectConfig.nameSingular}. Please add a field with name "name" to your object.`,
+        );
+        continue;
+      }
+
+      const objectManifest: ObjectManifest = {
+        ...objectConfig,
+        fields: objectFieldsWithDefaults.map(addMissingFieldOptionIds),
+        labelIdentifierFieldMetadataUniversalIdentifier,
+      };
+
+      objects.push(objectManifest);
+      fields.push(...reverseRelationFields);
+    }
+  }
+
   if (postInstallLogicFunctions.length > 1) {
     errors.push(
       'Only one post install logic function is allowed per application',
@@ -538,19 +571,31 @@ export const buildManifest = async (
 
   const application: ApplicationManifest | undefined =
     applicationConfig && resolvedDefaultRoleUniversalIdentifier
-      ? {
-          ...applicationConfig,
-          defaultRoleUniversalIdentifier:
-            resolvedDefaultRoleUniversalIdentifier,
-          yarnLockChecksum: null,
-          packageJsonChecksum: null,
-          ...(postInstallLogicFunctions.length >= 1
-            ? { postInstallLogicFunction: postInstallLogicFunctions[0] }
-            : {}),
-          ...(preInstallLogicFunctions.length >= 1
-            ? { preInstallLogicFunction: preInstallLogicFunctions[0] }
-            : {}),
-        }
+      ? (() => {
+          const {
+            logoUrl: _logoUrl,
+            screenshots: _screenshots,
+            ...applicationConfigRest
+          } = applicationConfig;
+
+          return {
+            ...applicationConfigRest,
+            logo: applicationConfig.logo,
+            galleryImages: applicationConfig.galleryImages ?? [],
+            defaultRoleUniversalIdentifier:
+              resolvedDefaultRoleUniversalIdentifier,
+            aboutDescription: readmeContent,
+            yarnLockChecksum: null,
+            packageJsonChecksum: null,
+            requiredServerVersionRange: getEngineVersionRange(appPath),
+            ...(postInstallLogicFunctions.length >= 1
+              ? { postInstallLogicFunction: postInstallLogicFunctions[0] }
+              : {}),
+            ...(preInstallLogicFunctions.length >= 1
+              ? { preInstallLogicFunction: preInstallLogicFunctions[0] }
+              : {}),
+          };
+        })()
       : undefined;
 
   const byId = <T extends { universalIdentifier: string }>(a: T, b: T) =>
@@ -575,6 +620,7 @@ export const buildManifest = async (
         frontComponents: frontComponents.sort(byId),
         publicAssets: publicAssets.sort(byPath),
         views: views.sort(byId),
+        viewFields: viewFields.sort(byId),
         navigationMenuItems: navigationMenuItems.sort(byId),
         pageLayouts: pageLayouts.sort(byId),
         pageLayoutTabs: pageLayoutTabs.sort(byId),
@@ -595,6 +641,7 @@ export const buildManifest = async (
     frontComponents: frontComponentsFilePaths,
     publicAssets: publicAssetsFilePaths,
     views: viewsFilePaths,
+    viewFields: viewFieldsFilePaths,
     navigationMenuItems: navigationMenuItemsFilePaths,
     pageLayouts: pageLayoutsFilePaths,
     pageLayoutTabs: pageLayoutTabsFilePaths,

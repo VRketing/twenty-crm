@@ -23,7 +23,7 @@ import { BillingSubscriptionItemEntity } from 'src/engine/core-modules/billing/e
 import { BillingSubscriptionEntity } from 'src/engine/core-modules/billing/entities/billing-subscription.entity';
 import { SubscriptionStatus } from 'src/engine/core-modules/billing/enums/billing-subscription-status.enum';
 import { BillingWebhookEvent } from 'src/engine/core-modules/billing/enums/billing-webhook-events.enum';
-import { BillingUsageService } from 'src/engine/core-modules/billing/services/billing-usage.service';
+import { BillingUsageCacheService } from 'src/engine/core-modules/billing/services/billing-usage-cache.service';
 import { StripeCustomerService } from 'src/engine/core-modules/billing/stripe/services/stripe-customer.service';
 import { StripeSubscriptionScheduleService } from 'src/engine/core-modules/billing/stripe/services/stripe-subscription-schedule.service';
 import { InjectMessageQueue } from 'src/engine/core-modules/message-queue/decorators/message-queue.decorator';
@@ -61,7 +61,7 @@ export class BillingWebhookSubscriptionService {
     private readonly billingCustomerRepository: WorkspaceScopedRepository<BillingCustomerEntity>,
     private readonly workspaceService: WorkspaceService,
     private readonly stripeSubscriptionScheduleService: StripeSubscriptionScheduleService,
-    private readonly billingUsageService: BillingUsageService,
+    private readonly billingUsageCacheService: BillingUsageCacheService,
     private readonly workspaceCacheService: WorkspaceCacheService,
   ) {}
 
@@ -145,14 +145,12 @@ export class BillingWebhookSubscriptionService {
       workspaceId,
     );
 
-    await this.billingUsageService.flushAvailableCreditsFromCache(workspace.id);
+    await this.billingUsageCacheService.flushAvailableCredits(workspace.id);
     await this.workspaceCacheService.invalidateAndRecompute(workspace.id, [
-      'billingSubscription',
+      'currentBillingSubscription',
     ]);
 
-    const shouldSuspend = this.shouldSuspendWorkspace(data);
-
-    if (shouldSuspend) {
+    if (this.shouldSuspendWorkspace(data)) {
       if (workspace.activationStatus === WorkspaceActivationStatus.ACTIVE) {
         await this.workspaceService.suspendWorkspace(workspaceId);
       } else if (
@@ -162,12 +160,10 @@ export class BillingWebhookSubscriptionService {
         await this.workspaceService.deleteWorkspace(workspace.id);
       }
     } else if (
+      this.shouldReactivateWorkspace(data) &&
       workspace.activationStatus === WorkspaceActivationStatus.SUSPENDED
     ) {
-      await this.workspaceRepository.update(workspaceId, {
-        activationStatus: WorkspaceActivationStatus.ACTIVE,
-        suspendedAt: null,
-      });
+      await this.workspaceService.reactivateWorkspace(workspaceId);
 
       await this.messageQueueService.add<CleanWorkspaceDeletionWarningUserVarsJobData>(
         CleanWorkspaceDeletionWarningUserVarsJob.name,
@@ -197,7 +193,6 @@ export class BillingWebhookSubscriptionService {
     const suspendedStatuses = [
       SubscriptionStatus.Canceled,
       SubscriptionStatus.Unpaid,
-      SubscriptionStatus.Paused, // TODO: remove this once paused subscriptions are deprecated
     ];
 
     if (suspendedStatuses.includes(status)) {
@@ -208,7 +203,32 @@ export class BillingWebhookSubscriptionService {
     const hasTrialJustEnded =
       timeSinceTrialEnd > 0 && timeSinceTrialEnd < 60 * 60 * 24;
 
-    return hasTrialJustEnded && status === SubscriptionStatus.PastDue;
+    const canceledDuringTrial =
+      data.object.cancel_at_period_end &&
+      isDefined(data.object.canceled_at) &&
+      isDefined(data.object.trial_end) &&
+      data.object.canceled_at <= data.object.trial_end;
+
+    return (
+      hasTrialJustEnded &&
+      (status === SubscriptionStatus.PastDue || canceledDuringTrial)
+    );
+  }
+
+  shouldReactivateWorkspace(
+    data:
+      | Stripe.CustomerSubscriptionUpdatedEvent.Data
+      | Stripe.CustomerSubscriptionCreatedEvent.Data
+      | Stripe.CustomerSubscriptionDeletedEvent.Data,
+  ): boolean {
+    const status = data.object.status as SubscriptionStatus;
+
+    const activeStatuses = [
+      SubscriptionStatus.Active,
+      SubscriptionStatus.Trialing,
+    ];
+
+    return activeStatuses.includes(status);
   }
 
   async updateBillingSubscriptionItems(

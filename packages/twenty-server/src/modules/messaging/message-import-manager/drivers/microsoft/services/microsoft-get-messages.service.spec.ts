@@ -99,6 +99,7 @@ describe('Microsoft get messages service', () => {
           role: MessageParticipantRole.TO,
         },
       ],
+      isDraft: false,
       attachments: [],
       messageFolderExternalIds: responseExample1.body.parentFolderId
         ? [responseExample1.body.parentFolderId]
@@ -145,6 +146,7 @@ describe('Microsoft get messages service', () => {
           role: MessageParticipantRole.CC,
         },
       ],
+      isDraft: false,
       attachments: [],
       messageFolderExternalIds: responseExample2.body.parentFolderId
         ? [responseExample2.body.parentFolderId]
@@ -152,7 +154,7 @@ describe('Microsoft get messages service', () => {
     });
   });
 
-  it('Should set empty text for html responses', () => {
+  it('Should convert html responses to text', () => {
     const batchResponses: MicrosoftGraphBatchResponse[] =
       microsoftGraphBatchWithHtmlMessagesResponse;
     const connectedAccount = {
@@ -176,7 +178,7 @@ describe('Microsoft get messages service', () => {
       externalId: responseExample.body.id,
       subject: responseExample.body.subject,
       receivedAt: new Date(responseExample.body.receivedDateTime),
-      text: '',
+      text: 'test 4',
       headerMessageId: responseExample.body.internetMessageId,
       messageThreadExternalId: responseExample.body.conversationId,
       direction: 'OUTGOING',
@@ -188,6 +190,7 @@ describe('Microsoft get messages service', () => {
           role: MessageParticipantRole.FROM,
         },
       ],
+      isDraft: false,
       attachments: [],
       messageFolderExternalIds: responseExample.body.parentFolderId
         ? [responseExample.body.parentFolderId]
